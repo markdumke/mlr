@@ -46,19 +46,16 @@ test_that("generateFunctionalANOVAData", {
 })
 
 test_that("generatePartialDependenceData", {
-  gridsize = 3L
+  m = c(3, 10)
 
   # test regression with interactions, centering, and mixed factor features
   fr = train("regr.rpart", regr.task)
-  dr = generatePartialDependenceData(fr, input = regr.task, features = c("lstat", "chas"),
-    interaction = TRUE, fmin = list("lstat" = 1, "chas" = NA),
-    fmax = list("lstat" = 40, "chas" = NA), gridsize = gridsize)
+  dr = generatePartialDependenceData(fr, input = regr.task,
+    features = c("lstat", "chas"), interaction = TRUE, n = m)
   nfeat = length(dr$features)
   nfacet = length(unique(regr.df[["chas"]]))
   n = getTaskSize(regr.task)
-  expect_that(max(dr$data$lstat), equals(40.))
-  expect_that(min(dr$data$lstat), equals(1.))
-  expect_that(nrow(dr$data), equals(gridsize * nfeat))
+  expect_that(nrow(dr$data), equals(m[1] * nfeat))
   expect_true(all(dr$data$medv >= min(regr.df$medv) | dr$data$medv <= max(regr.df$medv)))
 
   plotPartialDependence(dr, facet = "chas")
@@ -74,13 +71,9 @@ test_that("generatePartialDependenceData", {
   dr.df = generatePartialDependenceData(fr, input = regr.df, features = "lstat")
 
   # check that the interactions and centering work with ICE
-  dr = generatePartialDependenceData(fr, input = regr.task, features = c("lstat", "chas"),
-    interaction = TRUE, individual = TRUE,
-    fmin = list("lstat" = 1, "chas" = NA),
-    fmax = list("lstat" = 40, "chas" = NA), gridsize = gridsize)
-  expect_that(max(dr$data$lstat), equals(40.))
-  expect_that(min(dr$data$lstat), equals(1.))
-  expect_that(nrow(dr$data), equals(gridsize * nfeat * n))
+  dr = generatePartialDependenceData(fr, input = regr.task,
+    features = c("lstat", "chas"), interaction = TRUE, individual = TRUE, n = m)
+  expect_that(nrow(dr$data), equals(m[1] * nfeat * m[2]))
 
   plotPartialDependence(dr, facet = "chas", data = regr.df, p = 1)
   ggsave(path)
@@ -94,7 +87,7 @@ test_that("generatePartialDependenceData", {
   # an appropriate aggregation function
   fc = train("classif.rpart", multiclass.task)
   dc = generatePartialDependenceData(fc, input = multiclass.task, features = c("Petal.Width", "Petal.Length"),
-    fun = function(x) table(x) / length(x), gridsize = gridsize)
+    fun = function(x) table(x) / length(x), n = m)
   nfeat = length(dc$features)
   n = getTaskSize(multiclass.task)
   plotPartialDependence(dc, data = multiclass.df)
@@ -110,23 +103,24 @@ test_that("generatePartialDependenceData", {
   # test that an inappropriate function for a classification task throws an error
   # bounds cannot be used on classifiers
   fcp = train(makeLearner("classif.rpart", predict.type = "prob"), multiclass.task)
-  expect_error(generatePartialDependence(fcp, input = multiclass.task, features = "Petal.Width",
-    fun = function(x) quantile(x, c(.025, .5, .975))), gridsize = gridsize)
+  expect_error(generatePartialDependenceData(fcp, input = multiclass.task,
+    features = "Petal.Width",
+    fun = function(x) quantile(x, c(.025, .5, .975)), n = m))
 
   # check that probability outputting classifiers work w/ interactions
   dcp = generatePartialDependenceData(fcp, input = multiclass.task, features = c("Petal.Width", "Petal.Length"),
-    interaction = TRUE, gridsize = gridsize)
+    interaction = TRUE, n = m)
   nfacet = length(unique(dcp$data$Petal.Length))
   ntarget = length(dcp$target)
   plotPartialDependence(dcp, "tile")
 
   # check that probability outputting classifiers work with ICE
   dcp = generatePartialDependenceData(fcp, input = multiclass.task, features = c("Petal.Width", "Petal.Length"),
-    interaction = TRUE, individual = TRUE, gridsize = gridsize)
+    interaction = TRUE, individual = TRUE, n = m)
 
   # check that survival tasks work with multiple features
   fs = train("surv.rpart", surv.task)
-  ds = generatePartialDependenceData(fs, input = surv.task, features = c("x1", "x2"), gridsize = gridsize)
+  ds = generatePartialDependenceData(fs, input = surv.task, features = c("x1", "x2"), n = m)
   nfeat = length(ds$features)
   n = getTaskSize(surv.task)
   plotPartialDependence(ds, data = surv.df)
@@ -138,13 +132,13 @@ test_that("generatePartialDependenceData", {
 
   # issue 1180 test
   pd = generatePartialDependenceData(fr, input = regr.task,
-    features = c("lstat", "chas"), gridsize = gridsize)
+    features = c("lstat", "chas"), n = m)
   plotPartialDependence(pd)
 
   # check that bounds work for regression
   db = generatePartialDependenceData(fr, input = regr.task, features = c("lstat", "chas"),
     interaction = TRUE,
-    fun = function(x) quantile(x, c(.25, .5, .75)), gridsize = gridsize)
+    fun = function(x) quantile(x, c(.25, .5, .75)), n = m)
   nfacet = length(unique(regr.df[["chas"]]))
   n = getTaskSize(regr.task)
   expect_that(colnames(db$data), equals(c("medv", "lstat", "chas", "lower", "upper")))

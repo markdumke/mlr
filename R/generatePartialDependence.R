@@ -1,4 +1,5 @@
 #' @title Generate partial dependence.
+#' @importFrom mmpf marginalPrediction
 #'
 #' @description
 #' Estimate how the learned prediction function is affected by one or more features.
@@ -134,41 +135,11 @@
 #' fit = train(lrn, iris.task)
 #' pd = generatePartialDependenceData(fit, iris.task, "Petal.Width")
 #' plotPartialDependence(pd, data = getTaskData(iris.task))
-#'
-#' # simulated example with weights computed via the joint distribution
-#' # in practice empirical weights could be constructed by estimating the joint
-#' # density from the training data (the data arg to fun) and computing the probability
-#' # of the prediction grid under this estimated density (the newdata arg) or
-#' # by using something like data depth or outlier classification to weight the
-#' # unusualness of points in arg newdata.
-#' sigma = matrix(c(1, .5, .5, 1), 2, 2)
-#' C = chol(sigma)
-#' X = replicate(2, rnorm(100)) %*% C
-#' alpha = runif(2, -1, 1)
-#' y = X %*% alpha
-#' df = data.frame(y, X)
-#' tsk = makeRegrTask(data = df, target = "y")
-#' fit = train("regr.svm", tsk)
-#'
-#' w.fun = function(x, newdata) {
-#'  # compute multivariate normal density given sigma
-#'  sigma = matrix(c(1, .5, .5, 1), 2, 2)
-#'  dec = chol(sigma)
-#'  tmp = backsolve(dec, t(newdata), transpose = TRUE)
-#'  rss = colSums(tmp^2)
-#'  logretval = -sum(log(diag(dec))) - 0.5 * ncol(newdata) * log(2 * pi) - 0.5 * rss
-#'  w = exp(logretval)
-#'  # weight prediction grid given probability of grid points under the joint
-#'  # density
-#'  sum(w * x) / sum(w)
-#' }
-#'
-#' generatePartialDependenceData(fit, tsk, "X1", fun = w.fun)
 #' @export
 generatePartialDependenceData = function(obj, input, features,
   interaction = FALSE, derivative = FALSE, individual = FALSE, center = NULL,
   fun = mean, bounds = c(qnorm(.025), qnorm(.975)),
-  resample = "none", fmin, fmax, gridsize = 10L, range = NULL, ...) {
+  uniform = TRUE, n = c(10, NA), ...) {
 
   assertClass(obj, "WrappedModel")
   if (obj$learner$predict.type == "se" & individual)
@@ -186,6 +157,9 @@ generatePartialDependenceData = function(obj, input, features,
     assertDataFrame(data, col.names = "unique", min.rows = 1L, min.cols = length(obj$features) + length(td$target))
     assertSetEqual(colnames(data), c(obj$features, td$target), ordered = FALSE)
   }
+  
+  if (is.na(n[2]))
+    n[2] = nrow(data)
 
   if (missing(features))
     features = colnames(data)[!colnames(data) %in% td$target]
@@ -202,7 +176,7 @@ generatePartialDependenceData = function(obj, input, features,
   }
   assertFlag(individual)
   if (individual)
-    fun = function(x) x
+    fun = identity
   if (!is.null(center)) {
     if (derivative)
       stop("center cannot be used with derivative = TRUE.")
@@ -216,28 +190,11 @@ generatePartialDependenceData = function(obj, input, features,
   assertNumeric(bounds, len = 2L)
   assertNumber(bounds[1], upper = 0)
   assertNumber(bounds[2], lower = 0)
-  assertChoice(resample, c("none", "bootstrap", "subsample"))
-
-  if (missing(fmin))
-    fmin = sapply(features, function(x) ifelse(is.ordered(data[[x]]) | is.numeric(data[[x]]),
-      min(data[[x]], na.rm = TRUE), NA), simplify = FALSE)
-  if (missing(fmax))
-    fmax = sapply(features, function(x) ifelse(is.ordered(data[[x]]) | is.numeric(data[[x]]),
-      max(data[[x]], na.rm = TRUE), NA), simplify = FALSE)
-  assertList(fmin, len = length(features))
-  if (!all(names(fmin) %in% features))
-    stop("fmin must be a named list with an NA or value corresponding to each feature.")
-  assertList(fmax, len = length(features))
-  if (!all(names(fmax) %in% features))
-    stop("fmax must be a named list with an NA or value corresponding to each feature.")
-  assertCount(gridsize, positive = TRUE)
-
-  if (is.null(range))
-    rng = generateFeatureGrid(features, data, resample, gridsize, fmin, fmax)
-  else
-    rng = range
-  if (length(features) > 1L & interaction)
-    rng = expand.grid(rng)
+  assertFlag(uniform)
+  assertCount(n[1], positive = TRUE)
+  assertCount(n[2], positive = TRUE)
+  if (n[2] > nrow(data))
+    stop("The number of points taken from the training data cannot exceed the number of training data points.")
 
   if (td$type == "regr")
     target = td$target
@@ -249,72 +206,62 @@ generatePartialDependenceData = function(obj, input, features,
   }  else
     target = "Risk"
 
-  args = list(obj = obj, data = data, fun = fun, td = td, individual = individual,
-    bounds = bounds, ...)
-
   if (length(features) > 1L & !interaction) {
-    out = lapply(features, function(x) {
-      args$features = x
-      if (derivative) {
-        args$bounds = NULL
-        out = parallelMap(doPartialDerivativeIteration, x = rng[[x]], more.args = args)
-        rng = as.data.frame(rng[[x]])
-        colnames(rng) = x
-        centerpred = NULL
-      } else {
-        rng = as.data.frame(rng[[x]])
-        colnames(rng) = x
-        args$rng = rng
-        out = parallelMap(doPartialDependenceIteration, i = seq_len(nrow(rng)), more.args = args)
-        if (!is.null(center) & individual)
-          centerpred = as.data.frame(doPartialDependenceIteration(obj, data, center[, x, drop = FALSE],
-            x, fun, td, 1, bounds = bounds, ...))
-        else
-          centerpred = NULL
-      }
-      if (!individual)
-        doAggregatePartialDependence(out, td, target, x, rng)
-      else
-        doIndividualPartialDependence(out, td, nrow(data), rng, target, x, centerpred)
-    })
-    out = setDF(rbindlist(out, fill = TRUE))
+    args = list(model = obj, data = data, uniform = uniform, aggregate.fun = fun,
+      predict.fun = getPrediction, n = n, ...)
+    out = parallelMap(marginalPrediction, vars = features, more.args = args)
+    out = rbindlist(out, fill = TRUE)
   } else {
-    args$features = features
-    if (derivative) {
-      args$bounds = NULL
-      out = parallelMap(doPartialDerivativeIteration, x = rng[[features]], more.args = args)
-      centerpred = NULL
-      rng = as.data.frame(rng)
-      colnames(rng) = features
-    } else {
-      rng = as.data.frame(rng)
-      colnames(rng) = features
-      args$rng = rng
-      out = parallelMap(doPartialDependenceIteration, i = seq_len(nrow(rng)), more.args = args)
-      if (!is.null(center) & individual)
-        centerpred = as.data.frame(doPartialDependenceIteration(obj, data, center, features, fun, td, 1, bounds))
-      else
-        centerpred = NULL
-    }
-    if (!individual)
-      out = doAggregatePartialDependence(out, td, target, features, rng)
-    else
-      out = doIndividualPartialDependence(out, td, nrow(data), rng, target, features, centerpred)
+    out = marginalPrediction(data, features, n, obj, uniform, aggregate.fun = fun,
+      predict.fun = getPrediction, ...)
   }
 
+  # rename the target columns (which are unknown to marginalPrediction)
+  # no handling multilabel objects here
+  if (individual) {
+    # when fun = identity mmpf outputs a column for 1:n[2] rows
+    # find the first of these columns for reshaping
+    if (length(target) == 1L) {
+      out = melt(out, id.vars = features, variable.name = "n", value.name = target)
+    } else {
+      targets.re = paste0(target, collapse = "|")
+      out = melt(out, id.vars = features, variable.name = "n", value.name = "prob")
+      out$class = stri_extract_all_regex(out$n, targets.re, simplify = TRUE)
+      out$n = as.integer(stri_replace_all_regex(out$n, targets.re, ""))
+    }
+    out$n = as.integer(stri_replace_all_fixed(out$n, "preds", ""))
+  } else {
+    if (length(target) > 1L & td$type == "classif")
+      out = melt(out, id.vars = features, variable.name = "class", value.name = "prob")
+
+    if (length(target) == 1L)
+      setnames(out, "preds", target)
+  }
+
+  # when individual is TRUE and to be centered by using a reference prediction
+  # compute this prediction and then subtract it
+  if (!is.null(center)) {
+    setDF(center)
+    centerpred = getPrediction(obj, newdata = center)
+    out = out[, eval(target) := sapply(target, function(x)
+      out[, x, with = FALSE] - centerpred[, x])]
+  }
+
+  # consistent column ordering for melted and non-melted output
   if (td$type %in% c("regr", "surv"))
-    out = out[, c(target, features, colnames(out)[!colnames(out) %in% c(target, features)])]
+    setcolorder(out, c(target, features,
+      colnames(out)[!colnames(out) %in% c(target, features)]))
   else
-    out = out[, c("Class", "Probability", features,
-      colnames(out)[!colnames(out) %in% c("Class", "Probability", features)])]
+    setcolorder(out, c("class", "prob", features,
+      colnames(out)[!colnames(out) %in% c("class", "prob", features)]))
 
   makeS3Obj("PartialDependenceData",
     data = out,
     task.desc = td,
     target = target,
     features = features,
-    interaction = interaction,
     derivative = derivative,
+    interaction = interaction,
     individual = individual,
     center = !is.null(center))
 }
