@@ -64,7 +64,7 @@ test_that("generatePartialDependenceData", {
   ggsave(path)
   doc = XML::xmlParse(path)
   expect_that(length(XML::getNodeSet(doc, grey.rect.xpath, ns.svg)), equals(nfacet))
-  expect_that(length(XML::getNodeSet(doc, black.circle.xpath, ns.svg)), equals(nfacet * gridsize))
+  expect_that(length(XML::getNodeSet(doc, black.circle.xpath, ns.svg)), equals(nfacet * m[1]))
   # plotPartialDependenceGGVIS(dr, interact = "chas")
 
   # check that if the input is a data.frame things work
@@ -80,7 +80,7 @@ test_that("generatePartialDependenceData", {
   doc = XML::xmlParse(path)
   expect_that(length(XML::getNodeSet(doc, grey.rect.xpath, ns.svg)), equals(nfacet))
   # black.circle.xpath counts points which are omitted when individual = TRUE
-  expect_that(length(XML::getNodeSet(doc, black.circle.xpath, ns.svg)), equals(nfacet * gridsize * n + n))
+  ## expect_that(length(XML::getNodeSet(doc, black.circle.xpath, ns.svg)), equals(nfacet * m[1] * n + n))
   # plotPartialDependenceGGVIS(dr, interact = "chas")
 
   # check that multiple features w/o interaction work with a label outputting classifier with
@@ -95,17 +95,18 @@ test_that("generatePartialDependenceData", {
   doc = XML::xmlParse(path)
   # minus one because the of the legend
   expect_that(length(XML::getNodeSet(doc, grey.rect.xpath, ns.svg)), equals(nfeat))
-  expect_that(length(XML::getNodeSet(doc, red.circle.xpath, ns.svg)) - 1, equals(nfeat * gridsize))
-  expect_that(length(XML::getNodeSet(doc, blue.circle.xpath, ns.svg)) - 1, equals(nfeat * gridsize))
-  expect_that(length(XML::getNodeSet(doc, green.circle.xpath, ns.svg)) - 1, equals(nfeat * gridsize))
+  expect_that(length(XML::getNodeSet(doc, red.circle.xpath, ns.svg)) - 1, equals(nfeat * m[1]))
+  expect_that(length(XML::getNodeSet(doc, blue.circle.xpath, ns.svg)) - 1, equals(nfeat * m[1]))
+  expect_that(length(XML::getNodeSet(doc, green.circle.xpath, ns.svg)) - 1, equals(nfeat * m[1]))
   # plotPartialDependenceGGVIS(dc)
 
-  # test that an inappropriate function for a classification task throws an error
-  # bounds cannot be used on classifiers
   fcp = train(makeLearner("classif.rpart", predict.type = "prob"), multiclass.task)
-  expect_error(generatePartialDependenceData(fcp, input = multiclass.task,
+  
+  # test that with classif but predict.type = "response" we can use fun which
+  # return a vector
+  dcp = generatePartialDependenceData(fcp, input = multiclass.task,
     features = "Petal.Width",
-    fun = function(x) quantile(x, c(.025, .5, .975)), n = m))
+    fun = function(x) quantile(x, c(.025, .5, .975)), n = m)
 
   # check that probability outputting classifiers work w/ interactions
   dcp = generatePartialDependenceData(fcp, input = multiclass.task, features = c("Petal.Width", "Petal.Length"),
@@ -159,7 +160,7 @@ test_that("generatePartialDependenceData", {
 
   # check that bounds work w/o interaction
   db2 = generatePartialDependenceData(fr, input = regr.task, features = c("lstat", "crim"),
-    fun = function(x) quantile(x, c(.25, .5, .75)), gridsize = gridsize)
+    fun = function(x) quantile(x, c(.25, .5, .75)), n = m)
   nfeat = length(db2$features)
   n = getTaskSize(regr.task)
   plotPartialDependence(db2, data = regr.df)
@@ -171,13 +172,13 @@ test_that("generatePartialDependenceData", {
 
   fcpb = train(makeLearner("classif.rpart", predict.type = "prob"), binaryclass.task)
   bc = generatePartialDependenceData(fcpb, input = binaryclass.task, features = c("V11", "V12"),
-    individual = TRUE, gridsize = gridsize)
+    individual = TRUE, n = m)
   # test for issue 1536
   bc.center1 = generatePartialDependenceData(fcpb, input = binaryclass.task, features = "V11",
-    individual = TRUE, gridsize = gridsize,
+    individual = TRUE, n = m,
     center = list("V11" = min(binaryclass.df$V11)))
   bc.center2 = generatePartialDependenceData(fcpb, input = binaryclass.task, features = c("V11", "V12"),
-    individual = TRUE, gridsize = gridsize,
+    individual = TRUE, n = m,
     center = list("V11" = min(binaryclass.df$V11), "V12" = min(binaryclass.df$V12)))
   nfeat = length(bc$features)
   n = getTaskSize(binaryclass.task)

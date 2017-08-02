@@ -44,57 +44,34 @@
 #'   The algorithm is developed in Goldstein, Kapelner, Bleich, and Pitkin (2015).
 #'   Default is \code{FALSE}.
 #' @param center [\code{list}]\cr
-#'   A named list containing the fixed values of the \code{features}
-#'   used to calculate an individual partial dependence which is then
-#'   subtracted from each individual partial dependence made across the prediction grid created for the
-#'   \code{features}: centering the individual partial dependence lines to make them more interpretable.
+#'   A named list containing a single value for all of the features in the training data,
+#'   which are used to compute a prediction which is subtracted from an individual:
+#'   centering the individual partial dependence lines to make them more interpretable.
 #'   This argument is ignored if \code{individual != TRUE}.
 #'   Default is \code{NULL}.
 #' @param fun [\code{function}]\cr
-#'   For regression, a function that accepts a numeric vector and returns either a single number
-#'   such as a measure of location such as the mean, or three numbers, which give a lower bound,
-#'   a measure of location, and an upper bound. Note if three numbers are returned they must be
-#'   in this order. For classification with \code{predict.type = "prob"} the function must accept
-#'   a numeric matrix with the number of columns equal to the number of class levels of the target.
-#'   For classification with \code{predict.type = "response"} (the default) the function must accept
-#'   a character vector and output a numeric vector with length equal to the number of classes in the
-#'   target feature. Two variables, \code{data} and \code{newdata} are made available to \code{fun} internally via a
-#'   wrapper. `data` is the training data from `input` and `newdata` contains a single point from the
-#'   prediction grid for \code{features} along with the training data for features not in \code{features}.
-#'   This allows the computation of weights based on comparisons of the prediction grid to the training data.
+#'
+#'   A function which operates on the output on the predictions made on the \code{input} data. For regression
+#'   this means a numeric vector, and, e.g., for a multiclass classification problem, this migh instead be probabilities
+#'   which are returned as a numeric matrix. This argument can return vectors of arbitrary length, however,
+#'   if their length is greater than one, they must by named, e.g., \code{fun = mean} or
+#'   \code{fun = function(x) c("mean" = mean(x), "variance" = var(x))}.
 #'   The default is the mean, unless \code{obj} is classification with \code{predict.type = "response"}
 #'   in which case the default is the proportion of observations predicted to be in each class.
 #' @param bounds [\code{numeric(2)}]\cr
 #'   The value (lower, upper) the estimated standard error is multiplied by to estimate the bound on a
 #'   confidence region for a partial dependence. Ignored if \code{predict.type != "se"} for the learner.
 #'   Default is the 2.5 and 97.5 quantiles (-1.96, 1.96) of the Gaussian distribution.
-#' @param resample [\code{character(1)}]\cr
-#'   Defines how the prediction grid for each feature is created. If \dQuote{bootstrap} then
-#'   values are sampled with replacement from the training data. If \dQuote{subsample} then
-#'   values are sampled without replacement from the training data. If \dQuote{none} an evenly spaced
-#'   grid between either the empirical minimum and maximum, or the minimum and maximum defined by
-#'   \code{fmin} and \code{fmax}, is created.
-#'   Default is \dQuote{none}.
-#' @param fmin [\code{numeric}]\cr
-#'   The minimum value that each element of \code{features} can take.
-#'   This argument is only applicable if \code{resample = NULL} and when the empirical minimum is higher
-#'   than the theoretical minimum for a given feature. This only applies to numeric features and a
-#'   \code{NA} should be inserted into the vector if the corresponding feature is a factor.
-#'   Default is the empirical minimum of each numeric feature and NA for factor features.
-#' @param fmax [\code{numeric}]\cr
-#'   The maximum value that each element of \code{features} can take.
-#'   This argument is only applicable if \code{resample = "none"} and when the empirical maximum is lower
-#'   than the theoretical maximum for a given feature. This only applies to numeric features and a
-#'   \code{NA} should be inserted into the vector if the corresponding feature is a factor.
-#'   Default is the empirical maximum of each numeric feature and NA for factor features.
-#' @param gridsize [\code{integer(1)}]\cr
-#'   The length of the prediction grid created for each feature.
-#'   If \code{resample = "bootstrap"} or \code{resample = "subsample"} then this defines
-#'   the number of (possibly non-unique) values resampled. If \code{resample = NULL} it defines the
-#'   length of the evenly spaced grid created.
-#' @param range [\code{list}]\cr
-#'   The range of values of the feature you would want the partial plots on - passed as a numeric list
-#' @param ... additional arguments to be passed to \code{\link{predict}}.
+#' @param uniform [\code{logical(1)}]\cr
+#'   Whether or not the prediction grid for the \code{features} is a uniform grid of size \code{n[1]} or sampled with
+#'   replacement from the \code{input}.
+#'   Default is \code{TRUE}.
+#' @param n [\code{integer21)}]\cr
+#'   The first element of \code{n} gives the size of the prediction grid created for each feature.
+#'   The second element of \code{n} gives the size of the sample to be drawn without replacement from the \code{input} data.
+#'   Setting \code{n[2]} less than the number of rows in the \code{input} will decrease computation time.
+#'   The default for \code{n[1]} is 10, and the default for \code{n[2]} is the number of rows in the \code{input}.
+#' @param ... additional arguments to be passed to \code{\link{mmpf}{marginalPrediction}}.
 #' @return [\code{PartialDependenceData}]. A named list, which contains the partial dependence,
 #'   input data, target, features, task description, and other arguments controlling the type of
 #'   partial dependences made.
@@ -174,19 +151,31 @@ generatePartialDependenceData = function(obj, input, features,
     if (any(sapply(data[, features, drop = FALSE], class) %in% c("factor", "ordered", "character")))
       stop("All features must be numeric to estimate set derivative = TRUE!")
   }
+
+  assertFunction(fun)
+  test.fun = fun(1:3)
+  if (length(test.fun) == 1L) {
+    multi.fun = FALSE
+  } else {
+    multi.fun = TRUE
+    if (is.null(names(test.fun)))
+      stop("If fun returns a vector it must be named.")
+  }
+
   assertFlag(individual)
-  if (individual)
+  if (individual) {
     fun = identity
+    multi.fun = FALSE
+  }
+  
   if (!is.null(center)) {
     if (derivative)
       stop("center cannot be used with derivative = TRUE.")
-    assertList(center, len = length(features), names = "unique")
+    assertList(center, names = "unique")
     if (!all(names(center) %in% features))
-      stop("The names of the elements in center must be the same as the features.")
-    center = as.data.frame(do.call("cbind", center))
+      stop("The names of the elements in center must include all of the features.")
   }
-  assertFunction(fun)
-
+  
   assertNumeric(bounds, len = 2L)
   assertNumber(bounds[1], upper = 0)
   assertNumber(bounds[2], lower = 0)
@@ -206,6 +195,7 @@ generatePartialDependenceData = function(obj, input, features,
   }  else
     target = "Risk"
 
+  # estimation using mmpf::marginalPrediction
   if (length(features) > 1L & !interaction) {
     args = list(model = obj, data = data, uniform = uniform, aggregate.fun = fun,
       predict.fun = getPrediction, n = n, ...)
@@ -216,26 +206,81 @@ generatePartialDependenceData = function(obj, input, features,
       predict.fun = getPrediction, ...)
   }
 
+  # for se, compute upper and lower bounds
+  if (obj$learner$predict.type == "se") {
+    x = outer(out$se, bounds)
+    out[, c("lower", "upper") := lapply(1:2, function(i) x[, i])]
+    out[, se := NULL]
+    target = c("lower", target, "upper")
+  }
+
   # rename the target columns (which are unknown to marginalPrediction)
-  # no handling multilabel objects here
+  # no handling multilabel objects here (yet)
   if (individual) {
     # when fun = identity mmpf outputs a column for 1:n[2] rows
     # find the first of these columns for reshaping
     if (length(target) == 1L) {
       out = melt(out, id.vars = features, variable.name = "n", value.name = target)
+      out[, n := stri_replace_all_regex(n, "^preds", "")]
+      setcolorder(out, c(target, "n", features))
     } else {
       targets.re = paste0(target, collapse = "|")
-      out = melt(out, id.vars = features, variable.name = "n", value.name = "prob")
-      out$class = stri_extract_all_regex(out$n, targets.re, simplify = TRUE)
-      out$n = as.integer(stri_replace_all_regex(out$n, targets.re, ""))
+      out = melt(out, id.vars = features, variable.name = "n",
+        value.name = if (obj$learner$predict.type == "prob") "Probability"
+        else "Prediction")
+      if (td$type == "classif")
+        out[, Class := stri_extract_all_regex(out$n, targets.re, simplify = TRUE)]
+      else
+        out[, Target := stri_extract_all_regex(out$n, targets.re, simplify = TRUE)]
+      out[, n := stri_replace_all_regex(n, targets.re, "")]
+      setcolorder(out, c(targets, if (td$type == "classif") "Class" else "Target",
+        if (obj$learner$predict.type == "prob") "Probability" else "Prediction", "n", features))
     }
-    out$n = as.integer(stri_replace_all_fixed(out$n, "preds", ""))
   } else {
-    if (length(target) > 1L & td$type == "classif")
-      out = melt(out, id.vars = features, variable.name = "class", value.name = "prob")
-
-    if (length(target) == 1L)
-      setnames(out, "preds", target)
+    if (length(target) == 1L) {
+      if (multi.fun) {
+        # remove target name from columns, create a value column with the target name
+        # and use the remainder of the named output from fun as the type
+        setnames(out, names(out), stri_replace_all_fixed(names(out), "preds", ""))
+        out = melt(out, id.vars = features, variable.name = "Function",
+          value.name = target)
+        setcolorder(out, c(target, "Function", features))
+      } else {
+        setnames(out, "preds", target)
+        setcolorder(out, c(target, features))
+      }
+    } else {
+      targets.re = paste0(target, collapse = "|")
+      if (multi.fun) {
+        out = melt(out, id.vars = features,
+          variable.name = if (td$type == "classif") "Class" else "Function",
+          value.name = if (obj$learner$predict.type == "prob") "Probability" else "Prediction")
+        if (td$type == "classif") {
+          if (obj$learner$predict.type == "prob") {
+            x = stri_split_regex(out$Class, "\\.", n = 2, simplify = TRUE)
+            out[, c("Class", "Function") := lapply(1:2, function(i) x[, i])]
+            setcolorder(out, c("Class", "Function", "Probability", features))
+          } else {
+            out[, Class := stri_replace_all_regex(Class, "^preds\\.", "")]
+            setcolorder(out, c("Class", "Prediction", features))
+          }
+        } else {
+          out[, Function := stri_replace_all_regex(Function, "^preds\\.", "")]
+          setcolorder(out, c("Class", "Function", "Prediction", features))
+        }
+      } else {
+        out = melt(out, id.vars = features,
+          variable.name = if (td$type == "classif") "Class" else "Function",
+          value.name = if (obj$learner$predict.type == "prob") "Probability" else "Prediction")
+        if (td$type == "classif") {
+          out[, Class := stri_replace_all_regex(Class, "^prob\\.", "")]
+          setcolorder(out, c("Class", if (obj$learner$predict.type == "prob") "Probability" else "Prediction", features))
+        } else {
+          out[, Function := stri_replace_all_regex(Target, "^preds\\.", "")]
+          setcolorder(out, c("Target", if (obj$learner$predict.type == "prob") "Probability" else "Prediction", features))
+        }
+      }
+    }
   }
 
   # when individual is TRUE and to be centered by using a reference prediction
@@ -247,13 +292,12 @@ generatePartialDependenceData = function(obj, input, features,
       out[, x, with = FALSE] - centerpred[, x])]
   }
 
-  # consistent column ordering for melted and non-melted output
-  if (td$type %in% c("regr", "surv"))
-    setcolorder(out, c(target, features,
-      colnames(out)[!colnames(out) %in% c(target, features)]))
-  else
-    setcolorder(out, c("class", "prob", features,
-      colnames(out)[!colnames(out) %in% c("class", "prob", features)]))
+  if (all(c("upper", "lower") %in% names(out)))
+    target = c("upper", "lower", target)
+
+  if (td$type == "regr" & all(c("upper", "lower", target) %in% colnames(out)))
+    if (!all(out$lower <= out[[target]] & out[[target]] <= out$upper))
+      stop("function argument must return a sorted numeric vector ordered lowest to highest.")
 
   makeS3Obj("PartialDependenceData",
     data = out,
@@ -265,6 +309,16 @@ generatePartialDependenceData = function(obj, input, features,
     individual = individual,
     center = !is.null(center))
 }
+
+
+derivativeWrapper = function(x, ...) {
+  x = list(x)
+  names(x) = list(...)$vars
+  marginalPrediction(points = x, ...)$preds
+}
+
+jacobianWrapper = function(x)
+
 #' @title Generate a functional ANOVA decomposition
 #'
 #' @description
@@ -449,124 +503,6 @@ print.FunctionalANOVAData = function(x, ...) {
   printHead(x$data, ...)
 }
 
-doPartialDerivativeIteration = function(x, obj, data, features, fun, td, individual, ...) {
-  fun.wrapper = function(x, newdata, data, ...) {
-    args = formals(fun)
-    if (all(c("newdata", "data") %in% names(args))) {
-      fun(x, newdata = newdata, data = data, ...)
-    } else if ("newdata" %in% names(args)) {
-      fun(x, newdata = newdata, ...)
-    } else if ("data" %in% names(args)) {
-        fun(x, data = data, ...)
-    } else {
-      fun(x, ...)
-    }
-  }
-
-  f = function(x, obj, data, features, fun, td, ...) {
-    newdata = data
-    newdata[features] = x
-    pred = do.call("predict", c(list("object" = obj, "newdata" = newdata), list(...)))
-    if (obj$learner$predict.type == "response")
-      fun(getPredictionResponse(pred), ...)
-    else if (length(obj$task.desc$class.levels) == 2L)
-      fun(getPredictionProbabilities(pred), ...)
-    else
-      apply(getPredictionProbabilities(pred), 2, fun, ...)
-  }
-
-  if (!individual) {
-    # construct function appropriate for numDeriv w/ aggregate predictions
-    if (obj$learner$predict.type == "response")
-      numDeriv::grad(func = f, x = x, obj = obj, data = data, features = features, fun = fun.wrapper, td = td, ...)
-    else
-      t(numDeriv::jacobian(func = f, x = x, obj = obj, data = data, features = features, fun = fun.wrapper, td = td, ...))
-  } else {
-    if (obj$learner$predict.type == "response")
-      sapply(seq_len(nrow(data)), function(idx)
-        numDeriv::grad(func = f, x = x, obj = obj, data = data[idx, , drop = FALSE],
-          features = features, fun = fun.wrapper, td = td, ...))
-    else
-      t(sapply(seq_len(nrow(data)), function(idx) numDeriv::jacobian(func = f, x = x, obj = obj,
-        data = data[idx, , drop = FALSE], features = features, fun = fun.wrapper, td = td, ...)))
-  }
-}
-
-doPartialDependenceIteration = function(obj, data, rng, features, fun, td, i, bounds, individual = FALSE, ...) {
-  newdata = data
-  newdata[features] = rng[i, ]
-  fun.wrapper = function(x, newdata, data, ...) {
-    args = formals(fun)
-    if (all(c("newdata", "data") %in% names(args))) {
-      fun(x, newdata = newdata, data = data, ...)
-    } else if ("newdata" %in% names(args)) {
-      fun(x, newdata = newdata, ...)
-    } else if ("data" %in% names(args)) {
-      fun(x, data = data, ...)
-    } else {
-      fun(x, ...)
-    }
-  }
-  pred = do.call("predict", c(list("object" = obj, "newdata" = newdata), list(...)))
-  if (obj$learner$predict.type == "response") {
-    fun.wrapper(getPredictionResponse(pred), newdata, data, ...)
-  } else if (length(obj$task.desc$class.levels) == 2L) {
-    fun.wrapper(getPredictionProbabilities(pred), newdata, data, ...)
-  } else if (obj$learner$predict.type == "se") {
-    point = getPredictionResponse(pred)
-    out = cbind(point + outer(getPredictionSE(pred), bounds), point)[, c(1, 3, 2)]
-    unname(apply(out, 2, fun.wrapper, newdata = newdata, data = data, ...))
-  } else {
-    apply(getPredictionProbabilities(pred), 2, fun.wrapper, newdata = newdata,
-      data = data, ...)
-  }
-}
-
-doAggregatePartialDependence = function(out, td, target, features, rng) {
-  out = as.data.frame(do.call("rbind", out))
-  if (td$type == "regr" & ncol(out) == 3L)
-    colnames(out) = c("lower", target, "upper")
-  else
-    colnames(out) = target
-  out = cbind(out, rng)
-  if (td$type == "regr" & all(c("upper", "lower", target) %in% colnames(out)))
-    if (!all(out$lower <= out[[target]] & out[[target]] <= out$upper))
-      stop("function argument must return a sorted numeric vector ordered lowest to highest.")
-
-  if (all(target %in% td$class.levels)) {
-    out = melt(out, id.vars = features, variable = "Class", value.name = "Probability", variable.factor = TRUE)
-    out$Class = stri_replace_all(out$Class, "", regex = "^prob\\.")
-  }
-  out
-}
-
-doIndividualPartialDependence = function(out, td, n, rng, target, features, centerpred = NULL) {
-  if (td$type == "classif" & length(td$class.levels) > 2L) {
-    if (!is.null(centerpred))
-      out = lapply(out, function(x) x - centerpred) else
-        out = lapply(out, as.data.frame)
-    out = as.data.frame(rbindlist(out))
-    colnames(out) = target
-    idx = rep(seq_len(n), nrow(rng))
-    rng = rng[rep(seq_len(nrow(rng)), each = n), , drop = FALSE]
-    out = cbind(out, rng, idx, row.names = NULL)
-    out = melt(out, id.vars = c(features, "idx"),
-      variable.name = "Class", value.name = "Probability", variable.factor = TRUE)
-    out$idx = interaction(out$idx, out$Class)
-  } else {
-    out = as.data.frame(setDT(transpose(out))) # see https://github.com/Rdatatable/data.table/issues/600
-    if (!is.null(centerpred))
-      out = out - setDF(transpose(rep(centerpred, nrow(out)))) #t(as.data.frame(lapply(out, function(x) unname(x - centerpred))))
-    colnames(out) = 1:n
-    out = cbind(out, rng)
-    out = melt(out, id.vars = features, variable.name = "idx", value.name = target)
-    if (td$type == "classif")
-      out = melt(out, id.vars = c(features, "idx"), value.name = "Probability",
-        variable.name = "Class", variable.factor = TRUE)
-  }
-  out
-}
-
 #' @export
 print.PartialDependenceData = function(x, ...) {
   catf("PartialDependenceData")
@@ -703,9 +639,10 @@ plotPartialDependence = function(obj, geom = "line", facet = NULL, facet.wrap.nr
           geom_line() + geom_point()
     } else {
       if (obj$task.desc$type %in% c("regr", "surv")) {
-        plt = ggplot(obj$data, aes_string("Value", target, group = "idx")) +
+        plt = ggplot(obj$data, aes_string("Value", target, group = "n")) +
           geom_line(alpha = .25, color = ifelse(is.null(data), "black", "red")) + geom_point()
       } else {
+        
         plt = ggplot(obj$data, aes_string("Value", "Probability", group = "idx", color = "Class")) +
           geom_line(alpha = .25) + geom_point()
       }

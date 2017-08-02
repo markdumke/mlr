@@ -45,10 +45,16 @@ print.mlr.dump = function(x, ...) {
 # applys the appropriate getPrediction* helper function
 getPrediction = function(object, newdata, ...) {
   pred = do.call("predict", c(list("object" = object, "newdata" = newdata), list(...)))
-  switch(object$task.desc$type,
+  point = switch(object$task.desc$type,
     "regr" = getPredictionResponse(pred),
     "surv" = getPredictionResponse(pred),
-    "classif" = getPredictionProbabilities(pred))
+    "classif" = if (object$learner$predict.type == "response")
+      getPredictionResponse(pred) else getPredictionProbabilities(pred))
+
+  if (object$learner$predict.type == "se")
+    cbind("preds" = point, "se" = getPredictionSE(pred))
+  else
+    point
 }
 
 
