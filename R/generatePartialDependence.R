@@ -152,20 +152,18 @@ generatePartialDependenceData = function(obj, input, features,
       stop("All features must be numeric to estimate set derivative = TRUE!")
   }
 
+  assertFlag(individual)
+  if (individual)
+    fun = identity
+
   assertFunction(fun)
   test.fun = fun(1:3)
   if (length(test.fun) == 1L) {
     multi.fun = FALSE
   } else {
     multi.fun = TRUE
-    if (is.null(names(test.fun)))
+    if (is.null(names(test.fun)) & !individual)
       stop("If fun returns a vector it must be named.")
-  }
-
-  assertFlag(individual)
-  if (individual) {
-    fun = identity
-    multi.fun = FALSE
   }
   
   if (!is.null(center)) {
@@ -192,18 +190,48 @@ generatePartialDependenceData = function(obj, input, features,
       target = td$class.levels
     else
       target = td$positive
-  }  else
+  } else
     target = "Risk"
 
   # estimation using mmpf::marginalPrediction
-  if (length(features) > 1L & !interaction) {
-    args = list(model = obj, data = data, uniform = uniform, aggregate.fun = fun,
-      predict.fun = getPrediction, n = n, ...)
-    out = parallelMap(marginalPrediction, vars = features, more.args = args)
-    out = rbindlist(out, fill = TRUE)
+  # derivative estimation using numDeriv::grad or numDeriv::jacobian
+  if (derivative) {
+    ## args = list(model = obj, data = data, uniform = uniform, aggregate.fun = fun,
+    ##   predict.fun = getPrediction, n = n, ...)
+    points = sapply(features, function(x) uniformGrid(data[[x]], n[1]), simplify = FALSE)
+    if (length(target) == 1L & !multi.fun) {
+      deriv = lapply(seq_along(points), function(i) {
+        data.frame("preds" = numDeriv::grad(numDerivWrapper,
+          x = points[[i]], model = obj, data = data,
+          uniform = uniform, aggregate.fun = fun, vars = names(points)[i],
+          predict.fun = getPrediction, n = n, ...),
+          points[i])
+      })
+      names(deriv) = names(points)
+      out = rbindlist(deriv, fill = TRUE)
+    } else {
+      deriv = lapply(seq_along(points), function(i) {
+        out = data.frame(numDeriv::jacobian(numDerivWrapper,
+          x = points[[i]], model = obj, data = data,
+          uniform = uniform, aggregate.fun = fun, vars = names(points)[i],
+          predict.fun = getPrediction, n = n, ...),
+          points[i])
+        names(out) = c(seq_len(n[1]), names(points)[i])
+        out
+      })
+      ## names(deriv) = names(points)
+      out = rbindlist(deriv, fill = TRUE)
+    }
   } else {
-    out = marginalPrediction(data, features, n, obj, uniform, aggregate.fun = fun,
-      predict.fun = getPrediction, ...)
+    if (length(features) > 1L & !interaction) {
+      args = list(model = obj, data = data, uniform = uniform, aggregate.fun = fun,
+        predict.fun = getPrediction, n = n, ...)
+      out = parallelMap(marginalPrediction, vars = features, more.args = args)
+      out = rbindlist(out, fill = TRUE)
+    } else {
+      out = marginalPrediction(data, features, n, obj, uniform, aggregate.fun = fun,
+        predict.fun = getPrediction, ...)
+    }
   }
 
   # for se, compute upper and lower bounds
@@ -214,83 +242,29 @@ generatePartialDependenceData = function(obj, input, features,
     target = c("lower", target, "upper")
   }
 
-  # rename the target columns (which are unknown to marginalPrediction)
-  # no handling multilabel objects here (yet)
-  if (individual) {
-    # when fun = identity mmpf outputs a column for 1:n[2] rows
-    # find the first of these columns for reshaping
-    if (length(target) == 1L) {
-      out = melt(out, id.vars = features, variable.name = "n", value.name = target)
-      out[, n := stri_replace_all_regex(n, "^preds", "")]
-      setcolorder(out, c(target, "n", features))
-    } else {
-      targets.re = paste0(target, collapse = "|")
-      out = melt(out, id.vars = features, variable.name = "n",
-        value.name = if (obj$learner$predict.type == "prob") "Probability"
-        else "Prediction")
-      if (td$type == "classif")
-        out[, Class := stri_extract_all_regex(out$n, targets.re, simplify = TRUE)]
-      else
-        out[, Target := stri_extract_all_regex(out$n, targets.re, simplify = TRUE)]
-      out[, n := stri_replace_all_regex(n, targets.re, "")]
-      setcolorder(out, c(targets, if (td$type == "classif") "Class" else "Target",
-        if (obj$learner$predict.type == "prob") "Probability" else "Prediction", "n", features))
-    }
+  # output processing
+  single.target = length(target) == 1L
+  
+  if (single.target & !multi.fun) {
+    out = processSingleTargetSingleFun(out, features, target)
+  } else if (single.target & multi.fun) {
+    out = processSingleTargetMultiFun(out, features, target, individual)
+  } else if (!single.target & !multi.fun) {
+    out = processMultiTargetSingleFun(out, features, target, td$type,
+      obj$learner$predict.type)
   } else {
-    if (length(target) == 1L) {
-      if (multi.fun) {
-        # remove target name from columns, create a value column with the target name
-        # and use the remainder of the named output from fun as the type
-        setnames(out, names(out), stri_replace_all_fixed(names(out), "preds", ""))
-        out = melt(out, id.vars = features, variable.name = "Function",
-          value.name = target)
-        setcolorder(out, c(target, "Function", features))
-      } else {
-        setnames(out, "preds", target)
-        setcolorder(out, c(target, features))
-      }
-    } else {
-      targets.re = paste0(target, collapse = "|")
-      if (multi.fun) {
-        out = melt(out, id.vars = features,
-          variable.name = if (td$type == "classif") "Class" else "Function",
-          value.name = if (obj$learner$predict.type == "prob") "Probability" else "Prediction")
-        if (td$type == "classif") {
-          if (obj$learner$predict.type == "prob") {
-            x = stri_split_regex(out$Class, "\\.", n = 2, simplify = TRUE)
-            out[, c("Class", "Function") := lapply(1:2, function(i) x[, i])]
-            setcolorder(out, c("Class", "Function", "Probability", features))
-          } else {
-            out[, Class := stri_replace_all_regex(Class, "^preds\\.", "")]
-            setcolorder(out, c("Class", "Prediction", features))
-          }
-        } else {
-          out[, Function := stri_replace_all_regex(Function, "^preds\\.", "")]
-          setcolorder(out, c("Class", "Function", "Prediction", features))
-        }
-      } else {
-        out = melt(out, id.vars = features,
-          variable.name = if (td$type == "classif") "Class" else "Function",
-          value.name = if (obj$learner$predict.type == "prob") "Probability" else "Prediction")
-        if (td$type == "classif") {
-          out[, Class := stri_replace_all_regex(Class, "^prob\\.", "")]
-          setcolorder(out, c("Class", if (obj$learner$predict.type == "prob") "Probability" else "Prediction", features))
-        } else {
-          out[, Function := stri_replace_all_regex(Target, "^preds\\.", "")]
-          setcolorder(out, c("Target", if (obj$learner$predict.type == "prob") "Probability" else "Prediction", features))
-        }
-      }
-    }
+    out = processMultiTargetMultiFun(out, features, target, td$type,
+      obj$learner$predict.type, individual)
   }
 
   # when individual is TRUE and to be centered by using a reference prediction
   # compute this prediction and then subtract it
-  if (!is.null(center)) {
-    setDF(center)
-    centerpred = getPrediction(obj, newdata = center)
-    out = out[, eval(target) := sapply(target, function(x)
-      out[, x, with = FALSE] - centerpred[, x])]
-  }
+  ## if (!is.null(center)) {
+  ##   setDF(center)
+  ##   centerpred = getPrediction(obj, newdata = center)
+  ##   out = out[, eval(target) := sapply(target, function(x)
+  ##     out[, x, with = FALSE] - centerpred[, x])]
+  ## }
 
   if (all(c("upper", "lower") %in% names(out)))
     target = c("upper", "lower", target)
@@ -311,13 +285,108 @@ generatePartialDependenceData = function(obj, input, features,
 }
 
 
-derivativeWrapper = function(x, ...) {
-  x = list(x)
-  names(x) = list(...)$vars
-  marginalPrediction(points = x, ...)$preds
+# grad and jacobian both need to take a vector along with ...
+# and they return either a vector or a matrix
+# so i need to pass the points as that x, and then extract the appropriate
+# vector or matrix from marginalPrediction
+
+numDerivWrapper = function(points, vars, ...) {
+  args = list(...)
+  args$points = list(points)
+  names(args$points) = vars
+  args$vars = vars
+  out = do.call("marginalPrediction", args)
+  as.matrix(out[, which(names(out) != vars), with = FALSE])
+  ## out[[names(out)[names(out) != vars]]]
 }
 
-jacobianWrapper = function(x)
+## if there is a single target and fun returns a scalar
+## all we have to do is rename
+## preds to be that target and order the columns
+processSingleTargetSingleFun = function(out, features, target) {
+  setnames(out, "preds", target)
+  setcolorder(out, c(target, features))
+}
+
+## if there is a single target and fun returns a vector and if fun isn't the
+## identity fun, we have to melt and rename the columns for each element of that vector,
+## and reorder the columns. we call each element of the fun vector 'target'
+## and the value column is the target name
+## if fun is the identity (individual = TRUE) then we
+## reshape the columns so that we have a column n which gives the
+## observation id (this *should* match the training data row id, though it
+## doesn't atm) and a value column which has the name of the target
+processSingleTargetMultiFun = function(out, features, target, individual) {
+  if (!individual) {
+    setnames(out, names(out), stri_replace_all_fixed(names(out), "preds", ""))
+    out = melt(out, id.vars = features, variable.name = "Function", value.name = target)
+    setcolorder(out, c(target, "Function", features))
+  } else {
+    out = melt(out, id.vars = features, variable.name = "n", value.name = target)
+    out[, n := stri_replace_all_regex(n, "^preds", "")]
+    setcolorder(out, c(target, "n", features))
+  }
+}
+
+## if there are multiple targets and fun returns a scalar
+## this means we have a classification or multilabel task and
+## we melt the column so that there is a class column and a value column
+## which is 'probabiity' which predict.type = "prob" and 'prediction' otherwise
+## then we reorder the columns
+processMultiTargetSingleFun = function(out, features, target, td.type, predict.type) {
+  targets.re = paste0(target, collapse = "|")
+  out = melt(out, id.vars = features,
+    variable.name = if (td.type == "classif") "Class" else "Function",
+    value.name = if (predict.type == "prob") "Probability" else "Prediction")
+  if (td.type == "classif") {
+    out[, Class := stri_replace_all_regex(Class, "^prob\\.", "")]
+    setcolorder(out, c("Class",
+      if (predict.type == "prob") "Probability" else "Prediction", features))
+  } else {
+    out[, Function := stri_replace_all_regex(Target, "^preds\\.", "")]
+    setcolorder(out, c("Target",
+      if (predict.type == "prob") "Probability" else "Prediction", features))
+  }
+}
+
+## if there are multiple targets and fun returns a vector
+## then, if fun is not the identity then we need to melt the columns as above
+## so that we first have a class column and either a prediction or probability column
+## we then have to split the class column to extract which fun element each output
+## row is associated with, and then we have to reorder the columns
+processMultiTargetMultiFun = function(out, features, target, td.type, predict.type, individual) {
+  if (individual) {
+    targets.re = paste0(target, collapse = "|")
+    out = melt(out, id.vars = features, variable.name = "n",
+      value.name = if (predict.type == "prob") "Probability"
+      else "Prediction")
+    if (td.type == "classif")
+      out[, Class := stri_extract_all_regex(out$n, targets.re, simplify = TRUE)]
+    else
+      out[, Target := stri_extract_all_regex(out$n, targets.re, simplify = TRUE)]
+    out[, n := stri_replace_all_regex(n, targets.re, "")]
+    setcolorder(out, c(if (td.type == "classif") "Class" else "Target",
+      if (predict.type == "prob") "Probability" else "Prediction", "n", features))
+  } else {
+    out = melt(out, id.vars = features,
+      variable.name = if (td.type == "classif") "Class" else "Function",
+      value.name = if (predict.type == "prob") "Probability" else "Prediction")
+    if (td.type == "classif") {
+      if (predict.type == "prob") {
+        x = stri_split_regex(out$Class, "\\.", n = 2, simplify = TRUE)
+        out[, c("Class", "Function") := lapply(1:2, function(i) x[, i])]
+        setcolorder(out, c("Class", "Function", "Probability", features))
+      } else {
+        out[, Class := stri_replace_all_regex(Class, "^preds\\.", "")]
+        setcolorder(out, c("Class", "Prediction", features))
+      }
+    } else {
+      out[, Function := stri_replace_all_regex(Function, "^preds\\.", "")]
+      setcolorder(out, c("Class", "Function", "Prediction", features))
+    }
+  }
+}
+
 
 #' @title Generate a functional ANOVA decomposition
 #'

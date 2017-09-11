@@ -80,7 +80,7 @@ test_that("generatePartialDependenceData", {
   doc = XML::xmlParse(path)
   expect_that(length(XML::getNodeSet(doc, grey.rect.xpath, ns.svg)), equals(nfacet))
   # black.circle.xpath counts points which are omitted when individual = TRUE
-  ## expect_that(length(XML::getNodeSet(doc, black.circle.xpath, ns.svg)), equals(nfacet * m[1] * n + n))
+  expect_that(length(XML::getNodeSet(doc, black.circle.xpath, ns.svg)), equals(n + prod(m) * nfacet))
   # plotPartialDependenceGGVIS(dr, interact = "chas")
 
   # check that multiple features w/o interaction work with a label outputting classifier with
@@ -90,7 +90,7 @@ test_that("generatePartialDependenceData", {
     fun = function(x) table(x) / length(x), n = m)
   nfeat = length(dc$features)
   n = getTaskSize(multiclass.task)
-  plotPartialDependence(dc, data = multiclass.df)
+  plotPartialDependence(dc, data = multiclass.df) 
   ggsave(path)
   doc = XML::xmlParse(path)
   # minus one because the of the legend
@@ -128,7 +128,7 @@ test_that("generatePartialDependenceData", {
   ggsave(path)
   doc = XML::xmlParse(path)
   expect_that(length(XML::getNodeSet(doc, grey.rect.xpath, ns.svg)), equals(nfeat))
-  expect_that(length(XML::getNodeSet(doc, black.circle.xpath, ns.svg)), equals(gridsize * nfeat))
+  expect_that(length(XML::getNodeSet(doc, black.circle.xpath, ns.svg)), equals(m[1] * nfeat))
   # plotPartialDependenceGGVIS(ds)
 
   # issue 1180 test
@@ -142,7 +142,7 @@ test_that("generatePartialDependenceData", {
     fun = function(x) quantile(x, c(.25, .5, .75)), n = m)
   nfacet = length(unique(regr.df[["chas"]]))
   n = getTaskSize(regr.task)
-  expect_that(colnames(db$data), equals(c("medv", "lstat", "chas", "lower", "upper")))
+  expect_that(colnames(db$data), equals(c("medv", "Function", "lstat", "chas")))
   plotPartialDependence(db, facet = "chas", data = regr.df)
   ggsave(path)
   doc = XML::xmlParse(path)
@@ -174,40 +174,43 @@ test_that("generatePartialDependenceData", {
   bc = generatePartialDependenceData(fcpb, input = binaryclass.task, features = c("V11", "V12"),
     individual = TRUE, n = m)
   # test for issue 1536
-  bc.center1 = generatePartialDependenceData(fcpb, input = binaryclass.task, features = "V11",
-    individual = TRUE, n = m,
-    center = list("V11" = min(binaryclass.df$V11)))
-  bc.center2 = generatePartialDependenceData(fcpb, input = binaryclass.task, features = c("V11", "V12"),
-    individual = TRUE, n = m,
-    center = list("V11" = min(binaryclass.df$V11), "V12" = min(binaryclass.df$V12)))
-  nfeat = length(bc$features)
-  n = getTaskSize(binaryclass.task)
-  plotPartialDependence(bc, data = binaryclass.df)
-  ggsave(path)
-  doc = XML::xmlParse(path)
-  expect_that(length(XML::getNodeSet(doc, grey.rect.xpath, ns.svg)), equals(nfeat))
+  ## bc.center1 = generatePartialDependenceData(fcpb, input = binaryclass.task, features = "V11",
+  ##   individual = TRUE, n = m,
+  ##   center = list("V11" = min(binaryclass.df$V11)))
+  ## bc.center2 = generatePartialDependenceData(fcpb, input = binaryclass.task, features = c("V11", "V12"),
+  ##   individual = TRUE, n = m,
+  ##   center = list("V11" = min(binaryclass.df$V11), "V12" = min(binaryclass.df$V12)))
+  ## nfeat = length(bc$features)
+  ## n = getTaskSize(binaryclass.task)
+  ## plotPartialDependence(bc, data = binaryclass.df)
+  ## ggsave(path)
+  ## doc = XML::xmlParse(path)
+  ## expect_that(length(XML::getNodeSet(doc, grey.rect.xpath, ns.svg)), equals(nfeat))
   # again, omission of points for individual = TRUE
-  expect_that(length(XML::getNodeSet(doc, red.line.xpath, ns.svg)), equals(nfeat * n))
+  ## expect_that(length(XML::getNodeSet(doc, red.line.xpath, ns.svg)), equals(nfeat * n))
   # plotPartialDependenceGGVIS(bc)
 
   # check that derivative estimation works for ICE and pd for classification and regression
-  subset = 1:5
   fr = train(makeLearner("regr.ksvm"), regr.task)
-  pfr = generatePartialDependenceData(fr, input = regr.df[subset, ], features = c("lstat", "crim"),
-    derivative = TRUE, individual = TRUE, gridsize = gridsize)
+  pfr = generatePartialDependenceData(fr, input = regr.df, features = c("lstat", "crim"),
+    derivative = TRUE, individual = FALSE, n = m)
+  pfri = generatePartialDependenceData(fr, input = regr.df,
+    features = c("lstat", "crim"),
+    derivative = TRUE, individual = TRUE, n = m)
+
   fc = train(makeLearner("classif.ksvm", predict.type = "prob"), multiclass.task)
-  pfc = generatePartialDependenceData(fc, input = multiclass.df[subset, ],
+  pfc = generatePartialDependenceData(fc, input = multiclass.df,
     features = c("Petal.Width", "Petal.Length"),
-    derivative = TRUE, gridsize = gridsize)
+    derivative = TRUE, n = m)
   fs = train(makeLearner("surv.coxph"), surv.task)
   pfs = generatePartialDependenceData(fs, input = surv.df[subset, ],
     features = c("x1", "x2"),
-    derivative = TRUE, gridsize = gridsize)
+    derivative = TRUE, n = m)
 
   # check that se estimation works
   fse = train(makeLearner("regr.lm", predict.type = "se"), regr.task)
   pfse = generatePartialDependenceData(fse, input = regr.task, features = c("lstat", "crim"),
-    bounds = c(-2, 2), gridsize = gridsize)
+    bounds = c(-2, 2), n = m)
 
   # check that tile + contour plots work for two and three features with regression and survival
   expect_error(plotPartialDependence(ds, geom = "tile")) # interaction == FALSE
