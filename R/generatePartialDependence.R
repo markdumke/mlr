@@ -211,12 +211,21 @@ generatePartialDependenceData = function(obj, input, features,
       out = rbindlist(deriv, fill = TRUE)
     } else {
       deriv = lapply(seq_along(points), function(i) {
-        out = data.frame(numDeriv::jacobian(numDerivWrapper,
+        out = numDeriv::jacobian(numDerivWrapper,
           x = points[[i]], model = obj, data = data,
           uniform = uniform, aggregate.fun = fun, vars = names(points)[i],
-          predict.fun = getPrediction, n = n, ...),
-          points[i])
-        names(out) = c(seq_len(n[1]), names(points)[i])
+          predict.fun = getPrediction, n = n, ...)
+        # since the derivative estimation setup calls marginalPrediction internally
+        # and when individual is true marginalPrediction from mmpf produces a matrix
+        # this results in a situation wherein i have to call numDeriv::jacobian
+        # rather than numDeriv::gradient. the alternative would be to call
+        # mmpf::marginalPrediction multiple times
+        # it might be possible to avoid all this crap with another wrapper
+        # outside of numDerivWrapper (maybe numDerivIndividualWrapper?)
+        # this works i think!
+        if (individual) out = t(apply(out, 2, function(x) x[which(x != 0)]))
+        out = data.frame(out, points[i])
+        names(out) = c(seq_len(n[2]), names(points)[i])
         out
       })
       ## names(deriv) = names(points)
