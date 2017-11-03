@@ -196,39 +196,40 @@ generatePartialDependenceData = function(obj, input, features,
   # estimation using mmpf::marginalPrediction
   # derivative estimation using numDeriv::grad or numDeriv::jacobian
   if (derivative) {
-    ## args = list(model = obj, data = data, uniform = uniform, aggregate.fun = fun,
-    ##   predict.fun = getPrediction, n = n, ...)
     points = sapply(features, function(x) uniformGrid(data[[x]], n[1]), simplify = FALSE)
     if (length(target) == 1L & !multi.fun) {
       deriv = lapply(seq_along(points), function(i) {
         data.frame("preds" = numDeriv::grad(numDerivWrapper,
           x = points[[i]], model = obj, data = data,
           uniform = uniform, aggregate.fun = fun, vars = names(points)[i],
-          predict.fun = getPrediction, n = n, ...),
+          predict.fun = getPrediction, n = n, target = target,
+          individual = individual, ...),
           points[i])
       })
       names(deriv) = names(points)
       out = rbindlist(deriv, fill = TRUE)
     } else {
+      int.points = sample(seq_len(nrow(data)), n[2])
+      # here marginalPrediction is called separately for each of the
+      # int.points (elements of n[2]). this is normally handled internally
+      # in mmpf::marginalPrediction but in this instance we have length(int.points)
+      # calls to mmpf::marginalPrediction multiplied by the number of calls
+      # necessary to estimate the jacobian at each point
       deriv = lapply(seq_along(points), function(i) {
-        out = numDeriv::jacobian(numDerivWrapper,
-          x = points[[i]], model = obj, data = data,
-          uniform = uniform, aggregate.fun = fun, vars = names(points)[i],
-          predict.fun = getPrediction, n = n, ...)
-        # since the derivative estimation setup calls marginalPrediction internally
-        # and when individual is true marginalPrediction from mmpf produces a matrix
-        # this results in a situation wherein i have to call numDeriv::jacobian
-        # rather than numDeriv::gradient. the alternative would be to call
-        # mmpf::marginalPrediction multiple times
-        # it might be possible to avoid all this crap with another wrapper
-        # outside of numDerivWrapper (maybe numDerivIndividualWrapper?)
-        # this works i think!
-        if (individual) out = t(apply(out, 2, function(x) x[which(x != 0)]))
-        out = data.frame(out, points[i])
-        names(out) = c(seq_len(n[2]), names(points)[i])
-        out
+        out = lapply(int.points, function(x) {
+          ret = cbind(numDeriv::jacobian(numDerivWrapper,
+            x = points[[i]], model = obj, data = data,
+            uniform = uniform, aggregate.fun = fun, vars = names(points)[i],
+            int.points = x,
+            predict.fun = getPrediction, n = n, target = target,
+            individual = individual, ...),
+            points[[i]], x)
+          ret = as.data.table(ret)
+          setnames(ret, names(ret), c(target, names(points)[i], "n"))
+          ret
+        })
+        out = rbindlist(out)
       })
-      ## names(deriv) = names(points)
       out = rbindlist(deriv, fill = TRUE)
     }
   } else {
@@ -245,25 +246,26 @@ generatePartialDependenceData = function(obj, input, features,
 
   # for se, compute upper and lower bounds
   if (obj$learner$predict.type == "se") {
-    x = outer(out$se, bounds)
+    x = outer(out$se, bounds) + out$preds
     out[, c("lower", "upper") := lapply(1:2, function(i) x[, i])]
     out[, se := NULL]
     target = c("lower", target, "upper")
-  }
-
-  # output processing
-  single.target = length(target) == 1L
-  
-  if (single.target & !multi.fun) {
-    out = processSingleTargetSingleFun(out, features, target)
-  } else if (single.target & multi.fun) {
-    out = processSingleTargetMultiFun(out, features, target, individual)
-  } else if (!single.target & !multi.fun) {
-    out = processMultiTargetSingleFun(out, features, target, td$type,
-      obj$learner$predict.type)
+    setcolorder(out, c("lower", "preds", "upper", features))
+    setnames(out, names(out), c(target, features))
   } else {
-    out = processMultiTargetMultiFun(out, features, target, td$type,
-      obj$learner$predict.type, individual)
+    # output processing
+    single.target = length(target) == 1L
+    if (single.target & !multi.fun) {
+      out = processSingleTargetSingleFun(out, features, target)
+    } else if (single.target & multi.fun) {
+      out = processSingleTargetMultiFun(out, features, target, individual)
+    } else if (!single.target & !multi.fun) {
+      out = processMultiTargetSingleFun(out, features, target, td$type,
+        obj$learner$predict.type)
+    } else {
+      out = processMultiTargetMultiFun(out, features, target, td$type,
+        obj$learner$predict.type, individual)
+    }
   }
 
   # when individual is TRUE and to be centered by using a reference prediction
@@ -274,13 +276,6 @@ generatePartialDependenceData = function(obj, input, features,
   ##   out = out[, eval(target) := sapply(target, function(x)
   ##     out[, x, with = FALSE] - centerpred[, x])]
   ## }
-
-  if (all(c("upper", "lower") %in% names(out)))
-    target = c("upper", "lower", target)
-
-  if (td$type == "regr" & all(c("upper", "lower", target) %in% colnames(out)))
-    if (!all(out$lower <= out[[target]] & out[[target]] <= out$upper))
-      stop("function argument must return a sorted numeric vector ordered lowest to highest.")
 
   makeS3Obj("PartialDependenceData",
     data = out,
@@ -298,15 +293,20 @@ generatePartialDependenceData = function(obj, input, features,
 # and they return either a vector or a matrix
 # so i need to pass the points as that x, and then extract the appropriate
 # vector or matrix from marginalPrediction
-
-numDerivWrapper = function(points, vars, ...) {
+numDerivWrapper = function(points, vars, individual, target, ...) {
   args = list(...)
   args$points = list(points)
   names(args$points) = vars
   args$vars = vars
   out = do.call("marginalPrediction", args)
   as.matrix(out[, which(names(out) != vars), with = FALSE])
-  ## out[[names(out)[names(out) != vars]]]
+  ## this stacks with n sorted, so the prediction for n = 1 with points index = 1
+  ## then n = 1 and points index = 2, etc. so the jacobian is estimated for each row
+  ## which is the point-wise prediction
+  ## if (individual)
+  ##   out = melt(out, measure.vars = patterns(target), value.name = target,
+  ##     variable.name = "n")
+  ## as.matrix(out[, which(names(out) %in% target), with = FALSE])
 }
 
 ## if there is a single target and fun returns a scalar
@@ -346,15 +346,14 @@ processMultiTargetSingleFun = function(out, features, target, td.type, predict.t
   targets.re = paste0(target, collapse = "|")
   out = melt(out, id.vars = features,
     variable.name = if (td.type == "classif") "Class" else "Function",
-    value.name = if (predict.type == "prob") "Probability" else "Prediction")
+    value.name = if (td.type == "classif") "Probability" else "Prediction")
   if (td.type == "classif") {
     out[, Class := stri_replace_all_regex(Class, "^prob\\.", "")]
     setcolorder(out, c("Class",
-      if (predict.type == "prob") "Probability" else "Prediction", features))
+      if (td.type == "classif") "Probability" else "Prediction", features))
   } else {
-    out[, Function := stri_replace_all_regex(Target, "^preds\\.", "")]
-    setcolorder(out, c("Target",
-      if (predict.type == "prob") "Probability" else "Prediction", features))
+    out[, Function := stri_replace_all_regex(target, "^preds\\.", "")]
+    setcolorder(out, c("Function", if (td.type == "classif") "Probability" else "Prediction", features))
   }
 }
 
@@ -367,27 +366,31 @@ processMultiTargetMultiFun = function(out, features, target, td.type, predict.ty
   if (individual) {
     targets.re = paste0(target, collapse = "|")
     out = melt(out, id.vars = features, variable.name = "n",
-      value.name = if (predict.type == "prob") "Probability"
+      value.name = if (td.type == "classif") "Probability"
       else "Prediction")
+
     if (td.type == "classif")
       out[, Class := stri_extract_all_regex(out$n, targets.re, simplify = TRUE)]
     else
       out[, Target := stri_extract_all_regex(out$n, targets.re, simplify = TRUE)]
     out[, n := stri_replace_all_regex(n, targets.re, "")]
     setcolorder(out, c(if (td.type == "classif") "Class" else "Target",
-      if (predict.type == "prob") "Probability" else "Prediction", "n", features))
+      if (td.type == "classif") "Probability" else "Prediction", "n", features))
   } else {
     out = melt(out, id.vars = features,
       variable.name = if (td.type == "classif") "Class" else "Function",
-      value.name = if (predict.type == "prob") "Probability" else "Prediction")
+      value.name = if (td.type == "classif") "Probability" else "Prediction")
     if (td.type == "classif") {
-      if (predict.type == "prob") {
-        x = stri_split_regex(out$Class, "\\.", n = 2, simplify = TRUE)
-        out[, c("Class", "Function") := lapply(1:2, function(i) x[, i])]
-        setcolorder(out, c("Class", "Function", "Probability", features))
+      x = stri_split_regex(out$Class, "\\.", n = 2, simplify = TRUE)
+      ## checking to see if there is detritus, e.g., preds.class or something
+      id = apply(x, 2, function(z) length(unique(z)) > 1L)
+      if (!all(id)) {
+        out[, "Class"] = x[, id]
+        setcolorder(out, c("Class", "Probability", features))
       } else {
-        out[, Class := stri_replace_all_regex(Class, "^preds\\.", "")]
-        setcolorder(out, c("Class", "Prediction", features))
+        out[, c("Class", "Function") := lapply(1:2, function(i) x[, i])]
+        out[, Function := stri_replace_all_regex(Function, "^preds\\.", "")]
+        setcolorder(out, c("Class", "Function", "Probability", features))
       }
     } else {
       out[, Function := stri_replace_all_regex(Function, "^preds\\.", "")]
@@ -664,7 +667,6 @@ plotPartialDependence = function(obj, geom = "line", facet = NULL, facet.wrap.nr
       stop("obj argument created by generatePartialDependenceData must be called with interaction = TRUE to use this argument!")
 
     features = obj$features[which(obj$features != facet)]
-
     if (is.factor(obj$data[[facet]])) {
       obj$data[[facet]] = stri_paste(facet, "=", obj$data[[facet]], sep = " ")
     } else if (is.character(obj$data[[facet]])) {
@@ -681,9 +683,18 @@ plotPartialDependence = function(obj, geom = "line", facet = NULL, facet.wrap.nr
     if (length(features) > 1L & !(length(features) == 2L & geom == "tile")) {
       facet = "Feature"
       scales = "free_x"
+    } else {
+      scales = "fixed"
     }
   }
 
+  # detect if there was a multi-output function used in which case
+  # there should be a column named function which needs to be facetted
+  if ("Function" %in% colnames(obj$data)) {
+      facet = c(facet, "Function")
+  }
+
+  # sample from individual partial dependence estimates
   if (p != 1) {
     assertNumber(p, lower = 0, upper = 1, finite = TRUE)
     if (!obj$individual)
@@ -698,34 +709,43 @@ plotPartialDependence = function(obj, geom = "line", facet = NULL, facet.wrap.nr
   else
     target = "Risk"
 
+  # are there bounds compatible with a ribbon plot?
   bounds = all(c("lower", "upper") %in% colnames(obj$data) & obj$task.desc$type %in% c("surv", "regr") &
-                 length(features) < 3L & geom == "line")
-
+    length(features) < 3L & geom == "line")
+  
   if (geom == "line") {
+    # find factors and cast them to numerics so that we can melt
     idx = which(sapply(obj$data, class) == "factor" & colnames(obj$data) %in% features)
     # explicit casting previously done implicitly by reshape2::melt.data.frame
-    for (id in idx) obj$data[, id] = as.numeric(obj$data[, id])
+    for (id in idx) obj$data[, id] = as.numeric(obj$data[[id]])
+
+    # melt the features but leave everything else alone
     obj$data = setDF(melt(data.table(obj$data),
       id.vars = colnames(obj$data)[!colnames(obj$data) %in% features],
       variable = "Feature", value.name = "Value", na.rm = TRUE, variable.factor = TRUE))
+
+    # when individual is false plot variable value against the target
     if (!obj$individual) {
+      # for regression/survival this is a simple line plot
       if (obj$task.desc$type %in% c("regr", "surv"))
         plt = ggplot(obj$data, aes_string("Value", target)) +
           geom_line(color = ifelse(is.null(data), "black", "red")) + geom_point()
-      else
+      else # for classification create different colored lines
         plt = ggplot(obj$data, aes_string("Value", "Probability", group = "Class", color = "Class")) +
           geom_line() + geom_point()
-    } else {
+    } else { # if individual is true make the lines semi-transparent
       if (obj$task.desc$type %in% c("regr", "surv")) {
         plt = ggplot(obj$data, aes_string("Value", target, group = "n")) +
           geom_line(alpha = .25, color = ifelse(is.null(data), "black", "red")) + geom_point()
       } else {
-        
         plt = ggplot(obj$data, aes_string("Value", "Probability", group = "idx", color = "Class")) +
           geom_line(alpha = .25) + geom_point()
       }
     }
 
+    # if there is only one feature than melting was redundant (but cleaner code)
+    # so rename the x-axis using the feature name. rename target only if it was a vector
+    # since in this case the target name isn't passed through
     if (length(features) == 1L) {
       if (obj$task.desc$type %in% c("regr", "surv"))
         plt = plt + labs(x = features, y = target)
@@ -733,14 +753,15 @@ plotPartialDependence = function(obj, geom = "line", facet = NULL, facet.wrap.nr
         plt = plt + labs(x = features)
     }
 
-    # bounds from fun or se estimation
+    # ribbon bounds from se estimation
     if (bounds)
       plt = plt + geom_ribbon(aes_string(ymin = "lower", ymax = "upper"), alpha = .5)
 
-    # labels for ice plots
+    # labels added to for centered individual plots
     if (obj$center)
       plt = plt + ylab(stri_paste(target, "(centered)", sep = " "))
 
+    # labels added to for derivative plots
     if (obj$derivative)
       plt = plt + ylab(stri_paste(target, "(derivative)", sep = " "))
 
@@ -748,6 +769,8 @@ plotPartialDependence = function(obj, geom = "line", facet = NULL, facet.wrap.nr
     if (obj$task.desc$type == "classif") {
       target = "Probability"
       facet = "Class"
+      if ("Function" %in% obj$data)
+        facet = c(facet, "Function")
       scales = "free"
     }
     plt = ggplot(obj$data, aes_string(x = features[1], y = features[2], fill = target))
@@ -761,24 +784,37 @@ plotPartialDependence = function(obj, geom = "line", facet = NULL, facet.wrap.nr
       plt = plt + scale_fill_continuous(guide = guide_colorbar(title = stri_paste(target, "(derivative)", sep = " ")))
   }
 
-  # facetting
+  # facetting which is either passed in by the user, the features column when interaction = FALSE and length(features) > 1
+  # and/or when fun outputs a vector (then facetting on the Function column)
   if (!is.null(facet)) {
-    plt = plt + facet_wrap(as.formula(stri_paste("~", facet)), scales = scales,
-      nrow = facet.wrap.nrow, ncol = facet.wrap.ncol)
+    if (length(facet) == 1L)
+      plt = plt + facet_wrap(as.formula(stri_paste("~", facet)), scales = scales,
+        nrow = facet.wrap.nrow, ncol = facet.wrap.ncol)
+    else
+      plt = plt + facet_wrap(as.formula(stri_paste(facet[2], "~", facet[1])), scales = scales,
+        nrow = facet.wrap.nrow, ncol = facet.wrap.ncol) # facet ordering is reversed deliberately to handle len = 1 case!
   }
 
   # data overplotting
   if (!is.null(data)) {
     data = data[, colnames(data) %in% c(obj$features, obj$task.desc$target)]
     if (!is.null(facet)) {
-      if (!facet %in% obj$features)
-        data = melt(data, id.vars = c(obj$task.desc$target, obj$features[obj$features == facet]),
-                    variable = "Feature", value.name = "Value", na.rm = TRUE, variable.factor = TRUE)
-      if (facet %in% obj$features) {
-        if (!is.factor(data[[facet]]))
-          data[[facet]] = stri_paste(facet, "=", as.factor(signif(data[[facet]], 2)), sep = " ")
+      feature.facet = facet[facet %in% obj$features]
+      fun.facet = facet[!facet %in% feature.facet]
+
+      if (length(fun.facet) > 0L && (fun.facet == "Feature" || !feature.facet %in% obj$features))
+        data = melt(data, id.vars = c(obj$task.desc$target, feature.facet),
+          variable = "Feature", value.name = "Value", na.rm = TRUE, variable.factor = TRUE)
+
+      if (length(feature.facet) > 0) {
+        if (!is.factor(data[[feature.facet]]))
+          data[[feature.facet]] = stri_paste(feature.facet, "=", as.factor(signif(data[[feature.facet]], 2)), sep = " ")
         else
-          data[[facet]] = stri_paste(facet, "=", data[[facet]], sep = " ")
+          data[[feature.facet]] = stri_paste(feature.facet, "=", data[[feature.facet]], sep = " ")
+      }
+      
+      if (length(fun.facet) > 0L && "Function" %in% fun.facet) {
+        data = mmpf::cartesianExpand(data, data.frame("Function" = unique(obj$data$Function)))
       }
     }
 
@@ -808,6 +844,9 @@ plotPartialDependence = function(obj, geom = "line", facet = NULL, facet.wrap.nr
 
   plt
 }
+
+
+
 #' @title Plot a partial dependence using ggvis.
 #' @description
 #' Plot partial dependence from \code{\link{generatePartialDependenceData}} using ggvis.

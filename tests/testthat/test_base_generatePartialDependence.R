@@ -57,7 +57,7 @@ test_that("generatePartialDependenceData", {
   n = getTaskSize(regr.task)
   expect_that(nrow(dr$data), equals(m[1] * nfeat))
   expect_true(all(dr$data$medv >= min(regr.df$medv) | dr$data$medv <= max(regr.df$medv)))
-
+  
   plotPartialDependence(dr, facet = "chas")
   dir = tempdir()
   path = paste0(dir, "/test.svg")
@@ -90,7 +90,7 @@ test_that("generatePartialDependenceData", {
     fun = function(x) table(x) / length(x), n = m)
   nfeat = length(dc$features)
   n = getTaskSize(multiclass.task)
-  plotPartialDependence(dc, data = multiclass.df) 
+  plotPartialDependence(dc, data = multiclass.df)
   ggsave(path)
   doc = XML::xmlParse(path)
   # minus one because the of the legend
@@ -100,13 +100,14 @@ test_that("generatePartialDependenceData", {
   expect_that(length(XML::getNodeSet(doc, green.circle.xpath, ns.svg)) - 1, equals(nfeat * m[1]))
   # plotPartialDependenceGGVIS(dc)
 
-  fcp = train(makeLearner("classif.rpart", predict.type = "prob"), multiclass.task)
+  fcp = train(makeLearner("classif.svm", predict.type = "prob"), multiclass.task)
   
   # test that with classif but predict.type = "response" we can use fun which
   # return a vector
   dcp = generatePartialDependenceData(fcp, input = multiclass.task,
     features = "Petal.Width",
     fun = function(x) quantile(x, c(.025, .5, .975)), n = m)
+  plotPartialDependence(dcp)
 
   # check that probability outputting classifiers work w/ interactions
   dcp = generatePartialDependenceData(fcp, input = multiclass.task, features = c("Petal.Width", "Petal.Length"),
@@ -146,8 +147,8 @@ test_that("generatePartialDependenceData", {
   plotPartialDependence(db, facet = "chas", data = regr.df)
   ggsave(path)
   doc = XML::xmlParse(path)
-  expect_that(length(XML::getNodeSet(doc, grey.rect.xpath, ns.svg)), equals(nfacet))
-  expect_that(length(XML::getNodeSet(doc, black.circle.xpath, ns.svg)), equals(nfacet * gridsize + n))
+  expect_that(length(XML::getNodeSet(doc, grey.rect.xpath, ns.svg)), equals(nfacet * 3))
+  expect_that(length(XML::getNodeSet(doc, black.circle.xpath, ns.svg)), equals(nfacet * 3 * m[1] + n * 3))
   # plotPartialDependenceGGVIS(db, interact = "chas")
 
   # check derivative and factor feature failure
@@ -166,8 +167,9 @@ test_that("generatePartialDependenceData", {
   plotPartialDependence(db2, data = regr.df)
   ggsave(path)
   doc = XML::xmlParse(path)
-  expect_that(length(XML::getNodeSet(doc, grey.rect.xpath, ns.svg)), equals(nfeat))
-  expect_that(length(XML::getNodeSet(doc, black.circle.xpath, ns.svg)), equals(nfeat * gridsize + n * nfacet))
+  expect_that(length(XML::getNodeSet(doc, grey.rect.xpath, ns.svg)), equals(nfeat * 3))
+  expect_that(length(XML::getNodeSet(doc, black.circle.xpath, ns.svg)),
+    equals(nfeat * 3 * m[1] + n * nfeat * m[1]))
   # plotPartialDependenceGGVIS(db2)
 
   fcpb = train(makeLearner("classif.rpart", predict.type = "prob"), binaryclass.task)
@@ -203,7 +205,7 @@ test_that("generatePartialDependenceData", {
     features = c("Petal.Width", "Petal.Length"),
     derivative = TRUE, n = m)
   fs = train(makeLearner("surv.coxph"), surv.task)
-  pfs = generatePartialDependenceData(fs, input = surv.df[subset, ],
+  pfs = generatePartialDependenceData(fs, input = surv.df,
     features = c("x1", "x2"),
     derivative = TRUE, n = m)
 
@@ -215,7 +217,7 @@ test_that("generatePartialDependenceData", {
   # check that tile + contour plots work for two and three features with regression and survival
   expect_error(plotPartialDependence(ds, geom = "tile")) # interaction == FALSE
   tfr = generatePartialDependenceData(fr, regr.df, features = c("lstat", "crim", "chas"),
-    interaction = TRUE, gridsize = gridsize)
+    interaction = TRUE, n = m)
   plotPartialDependence(tfr, geom = "tile", facet = "chas", data = regr.df)
   tfs = generatePartialDependenceData(fs, surv.df, c("x1", "x2"), interaction = TRUE)
   plotPartialDependence(tfs, geom = "tile", data = surv.df)
@@ -228,40 +230,18 @@ test_that("generatePartialDependenceData", {
     data = regr.df)
   testFacetting(q, ncol = 2L)
 
-  # with the joint distribution as the weight function generatePartialDependenceData
-  # should return NA for regions with zero probability
-  x = runif(50L)
-  y = 2 * x
-  idx = which(x > .5)
-  x[idx] = NA
-  test.task = makeRegrTask(data = data.frame(x = x[-idx], y = y[-idx]), target = "y")
-  fit = train("regr.rpart", test.task)
-
-  fun = function(x, newdata) {
-    w = ifelse(newdata$x > .5, 0, 1)
-    if (sum(w) == 0) {
-      NA
-    } else {
-      weighted.mean(x, w)
-    }
-  }
-
-  pd = generatePartialDependenceData(fit, test.task, fun = fun,
-    fmin = list("x" = 0), fmax = list("x" = 1), gridsize = gridsize)
-  expect_that(all(is.na(pd$data[pd$data$x > .5, "y"])), is_true())
-
   # issue 55 in the tutorial
   pd = generatePartialDependenceData(fcp, multiclass.task, "Petal.Width",
-    center = list("Petal.Width" = min(multiclass.df$Petal.Width)), gridsize = gridsize)
+    center = list("Petal.Width" = min(multiclass.df$Petal.Width)), n = m)
 
   # subsequent bug found in pr #1206
   pd = generatePartialDependenceData(fcp, multiclass.task, "Petal.Width",
     individual = TRUE,
-    center = list("Petal.Width" = min(multiclass.df$Petal.Width)), gridsize = gridsize)
+    center = list("Petal.Width" = min(multiclass.df$Petal.Width)), n = m)
 
   # issue 63 in the tutorial
   pd = generatePartialDependenceData(fcp, multiclass.task, "Petal.Width",
-    individual = TRUE, derivative = TRUE, gridsize = gridsize)
+    individual = TRUE, derivative = TRUE, n = m)
 
   # test rng as paratmeter
   petal.width = c(seq(0.1, 0.6, 0.1), seq(1, 2.5, 0.1))
