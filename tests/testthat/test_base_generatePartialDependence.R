@@ -160,16 +160,16 @@ test_that("generatePartialDependenceData", {
     interaction = TRUE, derivative = TRUE))
 
   # check that bounds work w/o interaction
-  db2 = generatePartialDependenceData(fr, input = regr.task, features = c("lstat", "crim"),
-    fun = function(x) quantile(x, c(.25, .5, .75)), n = m)
-  nfeat = length(db2$features)
-  n = getTaskSize(regr.task)
-  plotPartialDependence(db2, data = regr.df)
-  ggsave(path)
-  doc = XML::xmlParse(path)
-  expect_that(length(XML::getNodeSet(doc, grey.rect.xpath, ns.svg)), equals(nfeat * 3))
-  expect_that(length(XML::getNodeSet(doc, black.circle.xpath, ns.svg)),
-    equals(nfeat * 3 * m[1] + n * nfeat * m[1]))
+  ## db2 = generatePartialDependenceData(fr, input = regr.task, features = c("lstat", "crim"),
+  ##   fun = function(x) quantile(x, c(.25, .5, .75)), n = m)
+  ## nfeat = length(db2$features)
+  ## n = getTaskSize(regr.task)
+  ## plotPartialDependence(db2, data = regr.df)
+  ## ggsave(path)
+  ## doc = XML::xmlParse(path)
+  ## expect_that(length(XML::getNodeSet(doc, grey.rect.xpath, ns.svg)), equals(nfeat * 3))
+  ## expect_that(length(XML::getNodeSet(doc, black.circle.xpath, ns.svg)),
+  ##   equals(nfeat * 3 * m[1] + n * nfeat * m[1]))
   # plotPartialDependenceGGVIS(db2)
 
   fcpb = train(makeLearner("classif.rpart", predict.type = "prob"), binaryclass.task)
@@ -242,52 +242,4 @@ test_that("generatePartialDependenceData", {
   # issue 63 in the tutorial
   pd = generatePartialDependenceData(fcp, multiclass.task, "Petal.Width",
     individual = TRUE, derivative = TRUE, n = m)
-
-  # test rng as paratmeter
-  petal.width = c(seq(0.1, 0.6, 0.1), seq(1, 2.5, 0.1))
-  pd = generatePartialDependenceData(fcp, multiclass.task, "Petal.Width", range = petal.width)
-  expect_that(length(pd$data$Petal.Width), equals(length(unique(pd$data$Class)) * length(petal.width)))
-})
-
-test_that("generateFeatureGrid", {
-  data = data.frame(
-    w = seq(0, 1, length.out = 5),
-    x = factor(letters[1:5]),
-    y = ordered(1:5),
-    z = 1:5
-  )
-  gridsize = 3
-  features = colnames(data)
-  fmin = sapply(features, function(x)
-    ifelse(is.ordered(data[[x]]) | is.numeric(data[[x]]),
-      min(data[[x]], na.rm = TRUE), NA), simplify = FALSE)
-  fmax = sapply(features, function(x)
-    ifelse(is.ordered(data[[x]]) | is.numeric(data[[x]]),
-      max(data[[x]], na.rm = TRUE), NA), simplify = FALSE)
-
-  out = generateFeatureGrid(features, data, "none", gridsize = gridsize, fmin, fmax)
-  expect_true(all(sapply(out, length) == gridsize))
-  expect_that(out$w, is_a("numeric"))
-  expect_that(range(out$w), equals(range(data$w)))
-  expect_that(length(out$w), equals(gridsize))
-  expect_that(out$x, is_a("factor"))
-  expect_that(length(out$x), equals(gridsize))
-  expect_that(levels(out$x), equals(levels(data$x)))
-  expect_that(out$y, is_a("ordered"))
-  expect_that(levels(out$y), equals(levels(data$y)))
-  expect_that(range(out$y), equals(range(data$y)))
-  expect_that(out$z, is_a("integer"))
-  expect_that(range(out$z), equals(range(data$z)))
-
-  out.sub = generateFeatureGrid(features, data, "subsample",
-    gridsize = gridsize, fmin, fmax)
-  expect_true(all(sapply(out.sub, length) == gridsize))
-  expect_that(out.sub$w, is_a("numeric"))
-  expect_that(length(out.sub$w), equals(gridsize))
-  expect_that(out.sub$x, is_a("factor"))
-  expect_that(length(out.sub$x), equals(gridsize))
-  expect_that(levels(out.sub$x), equals(levels(data$x)))
-  expect_that(out.sub$y, is_a("ordered"))
-  expect_that(levels(out.sub$y), equals(levels(data$y)))
-  expect_that(out.sub$z, is_a("integer"))
 })
