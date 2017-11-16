@@ -2,7 +2,7 @@
 #' @export
 makeReinfLearnTask = function(id, envir) {
   assertString(id)
-  assertClass(env, "R6")
+  assertClass(envir, "R6")
   task = makeS3Obj("Task",
     type = "reinfLearn",
     task.desc = NA
