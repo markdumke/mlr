@@ -37,7 +37,7 @@ makeMultilabelTask(id = deparse(substitute(data)), data, target,
 makeRegrTask(id = deparse(substitute(data)), data, target, weights = NULL,
   blocking = NULL, fixup.data = "warn", check.data = TRUE)
 
-makeReinfLearnTask(id, env)
+makeReinfLearnTask(id, envir)
 
 makeSurvTask(id = deparse(substitute(data)), data, target, weights = NULL,
   blocking = NULL, fixup.data = "warn", check.data = TRUE)

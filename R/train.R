@@ -31,13 +31,17 @@
 train = function(learner, task, subset, weights = NULL) {
   learner = checkLearner(learner)
   assertClass(task, classes = "Task")
-  if (missing(subset) || is.null(subset)) {
-    subset = seq_len(getTaskSize(task))
+  if (task$type != "reinfLearn") {
+    if (missing(subset) || is.null(subset)) {
+      subset = seq_len(getTaskSize(task))
+    } else {
+      if (is.logical(subset))
+        subset = which(subset)
+      else
+        subset = asInteger(subset)
+    }
   } else {
-    if (is.logical(subset))
-      subset = which(subset)
-    else
-      subset = asInteger(subset)
+    subset = NULL
   }
 
   # make sure that pack for learner is loaded, probably needed when learner is exported
@@ -63,6 +67,9 @@ train = function(learner, task, subset, weights = NULL) {
 
   vars = getTaskFeatureNames(task)
   # no vars? then use no vars model
+  if (task$type == "reinfLearn") {
+    vars = 1 # a hack
+  }
 
   if (length(vars) == 0L) {
     learner.model = makeNoFeaturesModel(targets = task$env$data[subset, tn], task.desc = getTaskDesc(task))
@@ -78,8 +85,8 @@ train = function(learner, task, subset, weights = NULL) {
     fun1 = if (opts$show.learner.output || inherits(learner, "OptWrapper")) identity else capture.output
     fun2 = if (opts$on.learner.error == "stop") identity else function(x) try(x, silent = TRUE)
     fun3 = if (opts$on.learner.error == "stop" || !opts$on.error.dump) identity else function(x) {
-        withCallingHandlers(x, error = function(c) utils::dump.frames())
-      }
+      withCallingHandlers(x, error = function(c) utils::dump.frames())
+    }
     if (opts$on.learner.warning == "quiet") {
       old.warn.opt = getOption("warn")
       on.exit(options(warn = old.warn.opt))

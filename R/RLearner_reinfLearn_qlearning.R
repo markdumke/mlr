@@ -4,6 +4,7 @@ makeRLearner.reinfLearn.qlearning = function() {
     cl = "reinfLearn.qlearning",
     package = "reinforcelearn",
     par.set = makeParamSet(
+      makeDiscreteLearnerParam(id = "fun.approx", values = c("table", "linear"), default = "table", tunable = FALSE),
       makeNumericLearnerParam(id = "n.episodes", default = 100, lower = 1, tunable = FALSE),
       makeNumericLearnerParam(id = "discount", default = 1, lower = 0, upper = 1, tunable = FALSE),
       makeNumericLearnerParam(id = "epsilon", default = 0.1, lower = 0, upper = 1, tunable = TRUE),
@@ -19,8 +20,8 @@ makeRLearner.reinfLearn.qlearning = function() {
 }
 
 #' @export
-trainLearner.reinfLearn.qlearning = function(.learner, .task, ...) {
-  reinforcelearn::qlearning(.task$envir, ...)
+trainLearner.reinfLearn.qlearning = function(.learner, .task, .subset, ...) {
+  reinforcelearn::qlearning(.task$task.desc$envir, ...)
 }
 
 #' @export

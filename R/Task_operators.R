@@ -80,6 +80,10 @@ getTaskTargetNames.UnsupervisedTaskDesc = function(x) {
   character(0L)
 }
 
+#' @export
+getTaskTargetNames.reinfLearnTaskDesc = function(x) {
+  character(0L)
+}
 
 #' @title Get the class levels for classification and multilabel tasks.
 #'

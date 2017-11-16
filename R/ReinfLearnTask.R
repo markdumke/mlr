@@ -20,7 +20,7 @@ makeReinfLearnTaskDescInternal = function(type, id, envir) {
   makeS3Obj("TaskDesc",
     id = id,
     type = type,
-    environment = envir,
+    envir = envir,
     states = envir$n.states,
     actions = envir$n.actions
   )
