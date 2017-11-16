@@ -34,7 +34,9 @@ setPredictType.Learner = function(learner, predict.type) {
     regr = c("response", "se"),
     surv = c("response", "prob"),
     costsens = "response",
-    cluster = c("response", "prob")
+    cluster = c("response", "prob"),
+    # does not make sense in reinforcement learning
+    reinfLearn = c("response", "prob")
   ))
   if (predict.type == "prob" && !hasLearnerProperties(learner, "prob"))
     stopf("Trying to predict probs, but %s does not support that!", learner$id)

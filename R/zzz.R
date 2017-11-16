@@ -31,7 +31,8 @@ mlr$learner.properties = list(
   cluster    = c("numerics", "factors", "ordered", "missings", "weights", "prob", "functionals",
     "single.functional"),
   surv       = c("numerics", "factors", "ordered", "missings", "weights", "prob", "lcens", "rcens", "icens", "featimp", "oobpreds", "functionals", "single.functional"),
-  costsens   = c("numerics", "factors", "ordered", "missings", "weights", "prob", "twoclass", "multiclass", "functionals", "single.functional")
+  costsens   = c("numerics", "factors", "ordered", "missings", "weights", "prob", "twoclass", "multiclass", "functionals", "single.functional"),
+  reinfLearn = c("episodic")
 )
 mlr$learner.properties$any = unique(unlist(mlr$learner.properties))
 

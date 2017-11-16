@@ -17,15 +17,14 @@ makeReinfLearnTaskDesc = function(id, envir) {
 }
 
 makeReinfLearnTaskDescInternal = function(type, id, envir) {
-
   makeS3Obj("TaskDesc",
     id = id,
     type = type,
+    environment = envir,
     states = envir$n.states,
     actions = envir$n.actions
   )
 }
-
 
 #' @export
 print.ReinfLearnTask = function(x, ...) {
